@@ -1,0 +1,6 @@
+# Copy this file to "local.properties" (same folder) and fill in your real key.
+# local.properties is git-ignored — never commit your actual API key.
+
+BACKEND_URL=https://your-app.vercel.app
+DEVICE_SHARED_SECRET=the_same_secret_you_set_in_vercel
+DASHBOARD_URL=https://your-app.vercel.app
