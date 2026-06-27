@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Reading + sending SMS -->
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <!-- Trust-by-contact check (SMS side: ContactsContract.PhoneLookup) -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- Approval + send-failed notifications -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Talking to the backend -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="true"
+        android:label="IRIS"
+        android:icon="@mipmap/ic_launcher"
+        android:theme="@style/Theme.AIReceptionist"
+        android:exported="false">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.AIReceptionist">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            Reads incoming SMS without needing to be the default SMS app.
+            The stock Messages app still receives everything normally too —
+            this is purely additive, not a replacement.
+        -->
+        <receiver
+            android:name=".sms.SmsReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter android:priority="999">
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+            Reads WhatsApp notifications and can reply via the same quick-reply
+            action a human tap would use. Requires the owner to manually enable
+            "Notification access" in system settings — there's no runtime
+            permission dialog for this; MainActivity deep-links there via
+            NotificationAccessHelper.openSettings().
+        -->
+        <service
+            android:name=".whatsapp.WhatsAppNotificationListener"
+            android:exported="false"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+    </application>
+</manifest>
