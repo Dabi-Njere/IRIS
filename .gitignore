@@ -1,0 +1,16 @@
+# Android
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/
+android/*.iml
+android/.idea/
+
+# Web
+web/node_modules/
+web/.next/
+web/.env.local
+web/.env
+web/tsconfig.tsbuildinfo
+
+.DS_Store
