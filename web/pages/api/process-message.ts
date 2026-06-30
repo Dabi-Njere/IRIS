@@ -45,7 +45,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     .maybeSingle();
 
   if (!conv) {
-    const { data: created } = await supabaseAdmin
+    const { data: created, error: convError } = await supabaseAdmin
       .from('conversations')
       .insert({
         channel: body.channel,
@@ -55,15 +55,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       })
       .select('*')
       .single();
+    if (convError || !created) {
+      console.error('Failed to create conversation:', convError);
+      return res.status(500).json({ error: 'Failed to create conversation', detail: convError?.message });
+    }
     conv = created;
   }
 
   // 2) Insert the incoming message.
-  const { data: incomingMsg } = await supabaseAdmin
+  const { data: incomingMsg, error: insertError } = await supabaseAdmin
     .from('messages')
     .insert({ conversation_id: conv.id, direction: 'incoming', body: body.body, status: 'received' })
     .select('*')
     .single();
+
+  if (insertError || !incomingMsg) {
+    console.error('Failed to insert message:', insertError);
+    return res.status(500).json({ error: 'Failed to save message', detail: insertError?.message });
+  }
 
   // 3) Build history + fetch applicant.
   const { data: priorMessages } = await supabaseAdmin
