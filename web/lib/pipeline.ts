@@ -79,10 +79,16 @@ export function buildHistory(messages: Array<{ direction: string; body: string }
   if (messages.length === 0) return '(none)';
   const asLines = (arr: typeof messages) =>
     arr.map(m => (m.direction === 'incoming' ? 'Them: ' : 'You: ') + m.body).join('\n');
-  if (summary && messages.length > 6) {
-    return `Summary of earlier conversation: ${summary}\n\nMost recent messages:\n${asLines(messages.slice(-4))}`;
+  // Always include the last 10 real messages for full context — this is
+  // what lets IRIS understand pronouns, half-finished thoughts, and "yeah
+  // that one" type replies without losing the thread. Only summarize
+  // anything OLDER than that, so long-running conversations stay cheap
+  // without ever going thin on recent context.
+  const recent = messages.slice(-10);
+  if (summary && messages.length > 10) {
+    return `Summary of earlier conversation: ${summary}\n\nLast 10 messages:\n${asLines(recent)}`;
   }
-  return asLines(messages);
+  return asLines(recent);
 }
 
 export async function classifyMessage(history: string, message: string): Promise<ClassificationResult> {
