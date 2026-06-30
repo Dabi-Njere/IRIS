@@ -99,8 +99,15 @@ ${history}
 New message from them:
 "${message}"
 
+IMPORTANT — emoji and short replies:
+If the conversation so far is a rental screening Q&A, classify continuations as RENTAL_INQUIRY even if the new message is just an emoji or very short reply. Interpret emoji responses to yes/no questions using context:
+- 👍 🙌 ✅ 👌 "yep" "yeah" "sure" "ok" = yes/true for whatever was just asked
+- 👎 🚫 ❌ "nope" "nah" "no" = no/false for whatever was just asked
+- ❤️ 😊 🥰 after a warm reply = positive acknowledgment, no field to extract
+
 If category is RENTAL_INQUIRY, extract anything mentioned into extracted_info using these exact keys when applicable: moveInDate, occupants, employmentStatus, hasPets, petDetails, smoker, creditCheckOk, incomeVerificationOk, viewingRequestedTime, name.
-For hasPets, smoker, creditCheckOk, incomeVerificationOk: use real JSON booleans (true/false), and capture them even from a bare "no"/"nope"/"yeah" if it's clearly answering a yes/no question in context. Omit any key not mentioned. intent can be null.`;
+For hasPets, smoker, creditCheckOk, incomeVerificationOk: use real JSON booleans (true/false). A 👍 answering "do you smoke?" = smoker: false. A 👎 answering "do you have pets?" = hasPets: false. Use the conversation context to determine which field an emoji is answering.
+Omit any key not mentioned. intent can be null.`;
 
   let raw = await callClaude(prompt, 400);
   raw = stripJsonFences(raw);
