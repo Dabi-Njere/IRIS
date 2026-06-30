@@ -36,6 +36,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(401).json({ error: 'unauthorized' });
   }
 
+  // Safety net: if somehow a "You:" message slips through the Android
+  // listener, drop it here rather than process and reply to our own message.
+  const bodyLower = body.body.trim().toLowerCase();
+  if (bodyLower.startsWith('you:') || bodyLower.startsWith('you :')) {
+    return res.status(200).json({ conversationId: '', messageId: '', category: 'OTHER',
+      autoSendText: null, needsApproval: false, draftText: null, decisionCreated: null });
+  }
+
   // 1) Find or create the conversation.
   let { data: conv } = await supabaseAdmin
     .from('conversations')
