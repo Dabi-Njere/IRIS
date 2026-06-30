@@ -14,34 +14,20 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
-/**
- * Reads incoming WhatsApp messages via Android's notification system, and can
- * reply by triggering the SAME "quick reply" action a human would tap from
- * the notification shade — no reverse-engineered WhatsApp client involved.
- *
- * Real limitations (see also the repo README):
- *  - Only sees messages that arrive while this listener is active.
- *  - Group chats are skipped entirely.
- *  - The reply PendingIntent only lives in memory for this process's
- *    lifetime. If the owner approves a WhatsApp draft via the web dashboard
- *    long after this notification was posted (and Android killed the app
- *    in between), the pending reply action is gone — SyncWorker will detect
- *    this and report send_failed back to the backend so the dashboard can
- *    tell the owner to reply manually instead of silently doing nothing.
- */
 class WhatsAppNotificationListener : NotificationListenerService() {
 
     companion object {
         private const val WHATSAPP_PACKAGE = "com.whatsapp"
-        private val pendingReplies = mutableMapOf<String, PendingReply>() // keyed by backend messageId
-        private val seenNotificationKeys = mutableSetOf<String>()
+        private val pendingReplies = mutableMapOf<String, PendingReply>()
+        private val processedKeys = mutableSetOf<String>()
 
-        /** Called by SyncWorker when the dashboard has approved a WhatsApp draft. */
         fun sendReply(messageId: String, text: String): Boolean {
             val pending = pendingReplies.remove(messageId) ?: return false
             return try {
                 val resultsBundle = Bundle()
-                pending.remoteInputs.forEach { ri -> resultsBundle.putCharSequence(ri.resultKey, text) }
+                pending.remoteInputs.forEach { ri ->
+                    resultsBundle.putCharSequence(ri.resultKey, text)
+                }
                 val fillInIntent = Intent()
                 RemoteInput.addResultsToIntent(pending.remoteInputs, fillInIntent, resultsBundle)
                 pending.actionIntent.send(pending.context, 0, fillInIntent)
@@ -61,19 +47,62 @@ class WhatsAppNotificationListener : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (sbn.packageName != WHATSAPP_PACKAGE) return
 
-        val notification = sbn.notification
-        val extras = notification.extras
+        val notification = sbn.notification ?: return
+        val extras = notification.extras ?: return
 
-        val isGroupConversation = extras.getBoolean(Notification.EXTRA_IS_GROUP_CONVERSATION, false)
-        if (isGroupConversation) return // groups excluded by design
+        // Skip group conversations entirely
+        val isGroup = extras.getBoolean(Notification.EXTRA_IS_GROUP_CONVERSATION, false)
+        if (isGroup) return
 
-        val sender = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: return
-        val body = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: return
+        // Get sender name and message body
+        val sender = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
+            ?.trim() ?: return
+        val body = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
+            ?.trim() ?: return
 
-        val dedupeKey = "${sbn.key}:$body"
-        if (!seenNotificationKeys.add(dedupeKey)) return
-        if (seenNotificationKeys.size > 200) seenNotificationKeys.clear()
+        // CRITICAL FIX 1: Skip if the notification body starts with "You:"
+        // WhatsApp shows sent messages in the notification as "You: [message]"
+        // We must never process our own sent messages as incoming.
+        if (body.startsWith("You:", ignoreCase = true) ||
+            body.startsWith("You :", ignoreCase = true)) {
+            return
+        }
 
+        // CRITICAL FIX 2: Skip if the notification shows a message thread where
+        // the most recent message is from us — indicated by the text containing
+        // patterns like "You: " mid-string (summary notifications)
+        val messages = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)
+        if (messages != null && messages.isNotEmpty()) {
+            val lastMessage = messages.last().toString().trim()
+            // If the last message in the thread is from "You:", skip entirely —
+            // we already replied, no need to reply again
+            if (lastMessage.startsWith("You:", ignoreCase = true) ||
+                lastMessage.startsWith("You :", ignoreCase = true)) {
+                return
+            }
+            // Use the last message as the body for more accuracy
+            val actualBody = if (lastMessage.contains(":")) {
+                lastMessage.substringAfter(":").trim()
+            } else lastMessage
+            processNotification(sbn, sender, actualBody, notification)
+            return
+        }
+
+        processNotification(sbn, sender, body, notification)
+    }
+
+    private fun processNotification(
+        sbn: StatusBarNotification,
+        sender: String,
+        body: String,
+        notification: Notification
+    ) {
+        // De-duplicate: same sender + same body = same message, don't process twice
+        val dedupeKey = "${sender}::${body}"
+        if (!processedKeys.add(dedupeKey)) return
+        if (processedKeys.size > 300) processedKeys.clear()
+
+        // Find the reply action
         val replyAction = notification.actions?.firstOrNull { action ->
             !action.remoteInputs.isNullOrEmpty() &&
                 (action.semanticAction == Notification.Action.SEMANTIC_ACTION_REPLY ||
@@ -82,15 +111,22 @@ class WhatsAppNotificationListener : NotificationListenerService() {
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val trusted = TrustChecker.isTrustedWhatsAppSender(applicationContext, sender)
-                val result = BackendClient.processMessage(
-                    channel = "whatsapp", contactIdentifier = sender, contactName = sender,
-                    trusted = trusted, body = body
+                // CRITICAL FIX 3: Trusted contacts should never get
+                // "who is this?" treatment. If they're saved in your contacts,
+                // IRIS drafts a reply and asks YOU to approve it — it does NOT
+                // auto-run a rental Q&A or send anything without your say-so.
+                val trusted = TrustChecker.isTrustedWhatsAppSender(
+                    applicationContext, sender
                 )
 
-                // Hold the reply action regardless of outcome, keyed by the
-                // backend's message id, so SyncWorker can fire it later if
-                // the dashboard approves a held draft.
+                val result = BackendClient.processMessage(
+                    channel = "whatsapp",
+                    contactIdentifier = sender,
+                    contactName = sender,
+                    trusted = trusted,
+                    body = body
+                )
+
                 pendingReplies[result.messageId] = PendingReply(
                     actionIntent = replyAction.actionIntent,
                     remoteInputs = replyAction.remoteInputs!!,
@@ -101,16 +137,17 @@ class WhatsAppNotificationListener : NotificationListenerService() {
                     sendReply(result.messageId, result.autoSendText)
                 }
                 if (result.needsApproval && result.draftText != null) {
-                    ApprovalNotifier(applicationContext).notifyDraftReady(sender, body, result.draftText)
+                    ApprovalNotifier(applicationContext).notifyDraftReady(
+                        sender, body, result.draftText
+                    )
                 }
             } catch (e: Exception) {
-                // Network/backend hiccup — nothing to clean up here.
+                // Network hiccup — nothing to clean up
             }
         }
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        // Deliberately no cleanup here — the owner may still approve after
-        // the notification itself has cleared from the shade.
+        // No cleanup needed
     }
 }
