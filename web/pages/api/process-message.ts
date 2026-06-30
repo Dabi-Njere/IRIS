@@ -191,7 +191,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // Background-ish summarization check (kept inline for simplicity; fine at
   // personal-app volume — move to a queue if this ever needs to scale).
   const newCount = (priorMessages?.length || 0) + 1 + (response.autoSendText ? 1 : 0);
-  if (newCount - conv.last_summarized_at >= 6) {
+  if (newCount - conv.last_summarized_at >= 10) {
     const { data: allMsgs } = await supabaseAdmin.from('messages').select('direction, body').eq('conversation_id', conv.id).order('created_at');
     const fullText = (allMsgs || []).map(m => (m.direction === 'incoming' ? 'Them: ' : 'You: ') + m.body).join('\n');
     const summary = await summarizeConversation(fullText);
