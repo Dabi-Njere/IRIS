@@ -80,7 +80,6 @@ class WhatsAppNotificationListener : NotificationListenerService() {
                  action.title?.toString()?.contains("Reply", ignoreCase = true) == true)
         } ?: return
 
-        val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val trusted = TrustChecker.isTrustedWhatsAppSender(applicationContext, sender)
@@ -104,8 +103,8 @@ class WhatsAppNotificationListener : NotificationListenerService() {
                 if (result.needsApproval && result.draftText != null) {
                     ApprovalNotifier(applicationContext).notifyDraftReady(sender, body, result.draftText)
                 }
-            } finally {
-                pendingResult.finish()
+            } catch (e: Exception) {
+                // Network/backend hiccup — nothing to clean up here.
             }
         }
     }
