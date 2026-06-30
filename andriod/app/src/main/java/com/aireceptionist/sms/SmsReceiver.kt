@@ -11,13 +11,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
-/**
- * Fires whenever an SMS arrives. We don't intercept/abort it (the stock
- * Messages app still gets it too) — we just read it, send it to the backend
- * for classification, and act on whatever comes back. No local AI calls, no
- * local database — the backend (and Supabase behind it) is the source of
- * truth, reachable from both this app and the web dashboard.
- */
 class SmsReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -27,26 +20,48 @@ class SmsReceiver : BroadcastReceiver() {
         if (messages.isEmpty()) return
 
         val sender = messages[0].originatingAddress ?: return
-        val fullBody = messages.joinToString(separator = "") { it.messageBody ?: "" }
+        val fullBody = messages.joinToString("") { it.messageBody ?: "" }
 
+        // goAsync() gives us 10 extra seconds beyond the normal 5s BroadcastReceiver
+        // window — enough for a backend round trip + reply send without the OS
+        // killing us mid-flight. This is the key to near-instant replies.
         val pendingResult = goAsync()
+
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val trusted = TrustChecker.isTrustedSmsSender(context, sender)
                 val result = BackendClient.processMessage(
-                    channel = "sms", contactIdentifier = sender, contactName = null,
-                    trusted = trusted, body = fullBody
+                    channel = "sms",
+                    contactIdentifier = sender,
+                    contactName = null,
+                    trusted = trusted,
+                    body = fullBody
                 )
 
+                // Send immediately on the same thread — no waiting for SyncWorker.
+                // This is what makes replies feel instant rather than 15 min late.
                 if (result.autoSendText != null) {
-                    SmsSender.send(context, sender, result.autoSendText)
+                    val sent = SmsSender.send(context, sender, result.autoSendText)
+                    if (sent) {
+                        BackendClient.confirmSent(result.messageId, true)
+                    }
                 }
+
                 if (result.needsApproval && result.draftText != null) {
-                    ApprovalNotifier(context).notifyDraftReady(sender, fullBody, result.draftText)
+                    ApprovalNotifier(context).notifyDraftReady(
+                        sender, fullBody, result.draftText
+                    )
+                }
+
+                if (result.decisionCreated != null) {
+                    ApprovalNotifier(context).notifyDecisionNeeded(
+                        "Decision needed",
+                        "Open the IRIS dashboard to review",
+                        sender.hashCode() + 1
+                    )
                 }
             } catch (e: Exception) {
-                // Network/backend hiccup — the message is still safely sitting
-                // in the real Messages app; nothing is lost, just not auto-handled.
+                // Backend hiccup — message is still safe in the Messages app
             } finally {
                 pendingResult.finish()
             }
