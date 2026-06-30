@@ -5,12 +5,17 @@
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.SEND_SMS" />
-    <!-- Trust-by-contact check (SMS side: ContactsContract.PhoneLookup) -->
+    <!-- Trust-by-contact check -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <!-- Approval + send-failed notifications -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Talking to the backend -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Critical: prevents Android from delaying SMS broadcasts due to battery optimization -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:allowBackup="true"
@@ -29,11 +34,6 @@
             </intent-filter>
         </activity>
 
-        <!--
-            Reads incoming SMS without needing to be the default SMS app.
-            The stock Messages app still receives everything normally too —
-            this is purely additive, not a replacement.
-        -->
         <receiver
             android:name=".sms.SmsReceiver"
             android:exported="true"
@@ -43,13 +43,15 @@
             </intent-filter>
         </receiver>
 
-        <!--
-            Reads WhatsApp notifications and can reply via the same quick-reply
-            action a human tap would use. Requires the owner to manually enable
-            "Notification access" in system settings — there's no runtime
-            permission dialog for this; MainActivity deep-links there via
-            NotificationAccessHelper.openSettings().
-        -->
+        <!-- Restart SyncWorker after phone reboot -->
+        <receiver
+            android:name=".work.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".whatsapp.WhatsAppNotificationListener"
             android:exported="false"
