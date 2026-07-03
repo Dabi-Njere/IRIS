@@ -75,29 +75,37 @@ export function mergeApplicant(existing: Applicant, info: Record<string, any>): 
   return a;
 }
 
-export function buildHistory(messages: Array<{ direction: string; body: string }>, summary: string | null): string {
+export function buildHistory(
+  messages: Array<{ direction: string; body: string }>,
+  summary: string | null,
+  contactName?: string
+): string {
   if (messages.length === 0) return '(none)';
+  const label = contactName && contactName.trim() ? contactName.trim() : 'Them';
   const asLines = (arr: typeof messages) =>
-    arr.map(m => (m.direction === 'incoming' ? 'Them: ' : 'You: ') + m.body).join('\n');
-  // Always include the last 10 real messages for full context — this is
-  // what lets IRIS understand pronouns, half-finished thoughts, and "yeah
-  // that one" type replies without losing the thread. Only summarize
-  // anything OLDER than that, so long-running conversations stay cheap
-  // without ever going thin on recent context.
-  const recent = messages.slice(-10);
-  if (summary && messages.length > 10) {
-    return `Summary of earlier conversation: ${summary}\n\nLast 10 messages:\n${asLines(recent)}`;
+    arr.map(m => (m.direction === 'incoming' ? `${label}: ` : 'You: ') + m.body).join('\n');
+  // Read up to 60 real messages — gives full context for ongoing conversations
+  // so IRIS never asks "who is this?" to a saved contact it's been talking to.
+  const recent = messages.slice(-60);
+  if (summary && messages.length > 60) {
+    return `Summary of earlier conversation: ${summary}\n\nLast 60 messages:\n${asLines(recent)}`;
   }
   return asLines(recent);
 }
 
-export async function classifyMessage(history: string, message: string): Promise<ClassificationResult> {
+export async function classifyMessage(history: string, message: string, contactName?: string): Promise<ClassificationResult> {
+  const whoTheyAre = contactName
+    ? `This message is from "${contactName}" — a saved contact. Do NOT ask who they are.`
+    : 'This message is from an unknown number.';
+
   const prompt = `You are the classification layer for a personal SMS/WhatsApp receptionist app. Read the NEW message in context and output ONLY this JSON, no markdown fences, no commentary:
 {
   "category": "RENTAL_INQUIRY" | "GENERAL_CONVERSATION" | "SPAM" | "WORK" | "PERSONAL" | "OTHER",
   "intent": "short_tag_or_null",
   "extracted_info": { }
 }
+
+${whoTheyAre}
 
 Conversation so far:
 ${history}
@@ -130,16 +138,19 @@ export async function draftReply(opts: {
   message: string;
   nextQuestion: string | null;
   styleGuidance: string;
+  contactName?: string;
 }): Promise<string> {
   if (opts.category === 'SPAM') return '';
+
+  const nameContext = opts.contactName ? `You are replying to ${opts.contactName}. ` : '';
 
   let instructions: string;
   if (opts.category === 'RENTAL_INQUIRY') {
     instructions = opts.nextQuestion
-      ? `You're replying on behalf of a landlord to a rental inquiry. Briefly acknowledge/answer what they just said (don't re-ask anything they already told you, here or earlier), then ask — in your own natural phrasing — exactly this and only this: "${opts.nextQuestion}". One question only.`
-      : `You're replying on behalf of a landlord to a rental inquiry. Every required field has been collected — do NOT ask anything further. Just acknowledge what they said and let them know you'll follow up shortly with next steps. Don't invent viewing times or addresses.`;
+      ? `${nameContext}You're replying on behalf of a landlord to a rental inquiry. Briefly acknowledge/answer what they just said (don't re-ask anything they already told you, here or earlier), then ask — in your own natural phrasing — exactly this and only this: "${opts.nextQuestion}". One question only.`
+      : `${nameContext}You're replying on behalf of a landlord to a rental inquiry. Every required field has been collected — do NOT ask anything further. Just acknowledge what they said and let them know you'll follow up shortly with next steps. Don't invent viewing times or addresses.`;
   } else {
-    instructions = `You're replying on behalf of the phone's owner to a ${opts.category} message. Reply naturally and briefly, SMS length, no questions needed unless they asked something.`;
+    instructions = `${nameContext}You're replying on behalf of the phone's owner. Reply naturally and conversationally, SMS length. Use the conversation history to understand context — never ask who the person is or what they were talking about if it's already in the history. If they sent a photo or media with no text, acknowledge it warmly and briefly.`;
   }
 
   const prompt = `${instructions}${opts.styleGuidance}
