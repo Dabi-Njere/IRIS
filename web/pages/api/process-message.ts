@@ -142,6 +142,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     await supabaseAdmin.from('messages').update({ category: classification.category, intent: classification.intent }).eq('id', incomingMsg.id);
 
     const isAutoPilotEligible = classification.category === 'RENTAL_INQUIRY' && !body.trusted;
+    // SMS trusted contacts: auto-reply to personal/general/work too.
+    // The whole point is automation — only truly ambiguous decisions
+    // (viewing bookings, rejecting applicants) need owner approval.
+    const isSmsAutoReply = body.channel === 'sms' &&
+      ['PERSONAL', 'GENERAL_CONVERSATION', 'WORK', 'OTHER'].includes(classification.category);
 
     if (isAutoPilotEligible) {
       const mergedApplicant = mergeApplicant(applicant, classification.extracted_info || {});
@@ -172,7 +177,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         response.decisionCreated = 'qualify';
       }
     } else if (classification.category === 'SPAM') {
-      // Silently dropped — no draft, no approval needed, nothing sent.
+      // Silently dropped
+    } else if (isSmsAutoReply) {
+      // SMS personal/work/general — auto-reply using conversation context.
+      // No approval needed for routine replies to people you know.
+      const draft = await draftReply({
+        category: classification.category, history, message: body.body,
+        nextQuestion: null, styleGuidance: styleGuidanceBlock(styleExamples || []),
+      });
+      if (draft) {
+        response.autoSendText = draft;
+      }
     } else {
       // Trusted contact (even if classified RENTAL_INQUIRY), or any non-rental
       // category for an unknown number — always draft-and-wait.
