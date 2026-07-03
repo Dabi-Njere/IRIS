@@ -128,6 +128,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     .order('created_at', { ascending: false })
     .limit(5);
 
+  // Fetch owner profile — injected into every draft so IRIS never gets
+  // basic facts about the owner wrong when replying to personal texts.
+  const { data: ownerProfile } = await supabaseAdmin
+    .from('owner_profile')
+    .select('*')
+    .eq('id', 1)
+    .maybeSingle();
+
+  const ownerContext = ownerProfile ? `
+Owner context (facts about the person whose phone this is — use this to answer questions accurately):
+- Name: ${ownerProfile.name || 'not set'}
+- Age: ${ownerProfile.age || 'not set'}
+- Occupation: ${ownerProfile.occupation || 'not set'}${ownerProfile.employer ? ` at ${ownerProfile.employer}` : ''}
+- Location: ${ownerProfile.location || 'not set'}
+- Physical: ${ownerProfile.physical_description || 'not set'}${ownerProfile.other_context ? `\n- Other: ${ownerProfile.other_context}` : ''}
+` : '';
+
   const response: ProcessResponse = {
     conversationId: conv.id, messageId: incomingMsg.id, category: 'OTHER',
     autoSendText: null, needsApproval: false, draftText: null, decisionCreated: null,
@@ -174,7 +191,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const draft = await draftReply({
         category: classification.category, history, message: effectiveBody,
         nextQuestion: nextQ, styleGuidance: styleGuidanceBlock(styleExamples || []),
-        contactName,
+        contactName, ownerContext,
       });
 
       response.autoSendText = draft;
@@ -200,7 +217,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const draft = await draftReply({
         category: classification.category, history, message: effectiveBody,
         nextQuestion: null, styleGuidance: styleGuidanceBlock(styleExamples || []),
-        contactName,
+        contactName, ownerContext,
       });
       if (draft) {
         response.autoSendText = draft;
@@ -209,7 +226,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const draft = await draftReply({
         category: classification.category, history, message: effectiveBody,
         nextQuestion: null, styleGuidance: styleGuidanceBlock(styleExamples || []),
-        contactName,
+        contactName, ownerContext,
       });
       if (draft) {
         response.needsApproval = true;
