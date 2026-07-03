@@ -139,10 +139,12 @@ export async function draftReply(opts: {
   nextQuestion: string | null;
   styleGuidance: string;
   contactName?: string;
+  ownerContext?: string;
 }): Promise<string> {
   if (opts.category === 'SPAM') return '';
 
   const nameContext = opts.contactName ? `You are replying to ${opts.contactName}. ` : '';
+  const ownerBlock = opts.ownerContext ? `\n${opts.ownerContext}` : '';
 
   let instructions: string;
   if (opts.category === 'RENTAL_INQUIRY') {
@@ -150,10 +152,10 @@ export async function draftReply(opts: {
       ? `${nameContext}You're replying on behalf of a landlord to a rental inquiry. Briefly acknowledge/answer what they just said (don't re-ask anything they already told you, here or earlier), then ask — in your own natural phrasing — exactly this and only this: "${opts.nextQuestion}". One question only.`
       : `${nameContext}You're replying on behalf of a landlord to a rental inquiry. Every required field has been collected — do NOT ask anything further. Just acknowledge what they said and let them know you'll follow up shortly with next steps. Don't invent viewing times or addresses.`;
   } else {
-    instructions = `${nameContext}You're replying on behalf of the phone's owner. Reply naturally and conversationally, SMS length. Use the conversation history to understand context — never ask who the person is or what they were talking about if it's already in the history. If they sent a photo or media with no text, acknowledge it warmly and briefly.`;
+    instructions = `${nameContext}You're replying on behalf of the phone's owner. Reply naturally and conversationally, SMS length. Use the conversation history to understand context — never ask who the person is or what they were talking about if it's already in the history. If they sent a photo or media with no text, acknowledge it warmly and briefly. If asked about the owner's personal details, use the owner context below — do not guess or make things up.`;
   }
 
-  const prompt = `${instructions}${opts.styleGuidance}
+  const prompt = `${instructions}${ownerBlock}${opts.styleGuidance}
 
 Conversation so far:
 ${opts.history}
