@@ -20,6 +20,10 @@ export default function Dashboard() {
   const [editing, setEditing] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [toast, setToast] = useState('');
+  const [profile, setProfile] = useState<any>(null);
+  const [profileEditing, setProfileEditing] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileForm, setProfileForm] = useState<any>({});
   const [schedPhone, setSchedPhone] = useState('');
   const [schedName, setSchedName] = useState('');
   const [schedTime, setSchedTime] = useState('08:00');
@@ -33,15 +37,23 @@ export default function Dashboard() {
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch('/api/dashboard-data');
-      if (!r.ok) {
-        const txt = await r.text();
-        setError(`API error ${r.status}: ${txt.slice(0, 200)}`);
+      const [dashRes, profileRes] = await Promise.all([
+        fetch('/api/dashboard-data'),
+        fetch('/api/owner-profile'),
+      ]);
+      if (!dashRes.ok) {
+        const txt = await dashRes.text();
+        setError(`API error ${dashRes.status}: ${txt.slice(0, 200)}`);
         return;
       }
-      const json = await r.json();
+      const json = await dashRes.json();
       setData(json);
       setError('');
+      if (profileRes.ok) {
+        const p = await profileRes.json();
+        setProfile(p);
+        setProfileForm(p);
+      }
     } catch (e: any) {
       setError('Failed to load: ' + e.message);
     }
@@ -75,6 +87,22 @@ export default function Dashboard() {
       if (r.ok) { showToast(action === 'approve' ? '✓ Sent' : '✓ Declined'); load(); }
       else showToast('Error — try again');
     } finally { setBusy(b => ({ ...b, [id]: false })); }
+  };
+
+  const saveProfile = async () => {
+    setProfileSaving(true);
+    try {
+      const r = await fetch('/api/owner-profile', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(profileForm),
+      });
+      if (r.ok) {
+        showToast('✓ Profile saved — IRIS will use this from now on');
+        setProfileEditing(false);
+        const p = await r.json();
+        setProfile(p);
+      } else showToast('Failed to save profile');
+    } finally { setProfileSaving(false); }
   };
 
   const addSchedule = async () => {
@@ -196,6 +224,44 @@ export default function Dashboard() {
               </div>
             );
           })}
+        </div>
+
+        {/* OWNER PROFILE */}
+        <div style={S.card}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+            <div style={S.title}>My Profile</div>
+            <button style={S.btn('#3A3744')} onClick={() => { setProfileEditing(!profileEditing); setProfileForm(profile || {}); }}>
+              {profileEditing ? 'Cancel' : 'Edit'}
+            </button>
+          </div>
+          <div style={{ ...S.muted, fontSize: 12, marginBottom: 10 }}>
+            IRIS uses this to answer questions about you accurately — "where do you live?", "what do you do?", etc.
+          </div>
+
+          {!profileEditing ? (
+            profile && profile.name ? (
+              <div>
+                {[['Name', profile.name], ['Age', profile.age], ['Occupation', profile.occupation], ['Employer', profile.employer], ['Location', profile.location], ['Physical', profile.physical_description], ['Other context', profile.other_context]].map(([k, v]) => v ? (
+                  <div key={k as string} style={{ display: 'flex', gap: 8, padding: '6px 0', borderBottom: '1px solid #3A3744', fontSize: 13 }}>
+                    <span style={S.muted}>{k}:</span><span>{v}</span>
+                  </div>
+                ) : null)}
+              </div>
+            ) : <div style={S.muted}>No profile set yet — click Edit to add your details.</div>
+          ) : (
+            <div>
+              {([['name', 'Your name'], ['age', 'Age'], ['occupation', 'Occupation (e.g. Finance professional)'], ['employer', 'Employer (e.g. Combined Insurance)'], ['location', 'Location (e.g. Thornhill, Ontario)'], ['physical_description', 'Physical description (optional)'], ['other_context', 'Anything else IRIS should know about you']] as [string, string][]).map(([key, placeholder]) => (
+                <input key={key} type="text" placeholder={placeholder}
+                  value={profileForm[key] || ''}
+                  onChange={e => setProfileForm((p: any) => ({ ...p, [key]: e.target.value }))}
+                  style={{ ...S.input, marginBottom: 8 }}
+                />
+              ))}
+              <button style={{ ...S.btn('#FF8A5B'), width: '100%' }} disabled={profileSaving} onClick={saveProfile}>
+                {profileSaving ? 'Saving…' : 'Save Profile'}
+              </button>
+            </div>
+          )}
         </div>
 
         {/* SCHEDULED MESSAGES */}
