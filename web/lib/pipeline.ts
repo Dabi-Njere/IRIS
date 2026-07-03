@@ -157,15 +157,21 @@ export async function draftReply(opts: {
 
   const prompt = `${instructions}${ownerBlock}${opts.styleGuidance}
 
-Conversation so far:
+Conversation so far (read ALL of this before replying — understand what's been discussed, what's been agreed, what's still open):
 ${opts.history}
 
-Their new message:
+Their latest message:
 "${opts.message}"
 
-Reply with ONLY the SMS text to send — no quotes, no preamble, no markdown.`;
+Before writing your reply, consider:
+- What is this conversation actually about?
+- What has already been said or agreed — don't repeat or contradict it
+- What does this latest message actually need — a direct answer, an acknowledgment, a question back?
+- Does anything in the owner profile apply here?
 
-  const raw = await callClaude(prompt, 200);
+Reply with ONLY the SMS text to send — no quotes, no preamble, no markdown. Keep it natural and brief like a real text.`;
+
+  const raw = await callClaude(prompt, 350);
   return raw.trim();
 }
 
