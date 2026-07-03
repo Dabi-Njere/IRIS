@@ -52,6 +52,11 @@
             </intent-filter>
         </receiver>
 
+        <!--
+            WhatsApp listener — disabled for now, too many edge cases with
+            the notification-based approach on a personal account. Re-enable
+            by uncommenting this block when testing on a dedicated device.
+
         <service
             android:name=".whatsapp.WhatsAppNotificationListener"
             android:exported="false"
@@ -60,6 +65,7 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+        -->
 
     </application>
 </manifest>
