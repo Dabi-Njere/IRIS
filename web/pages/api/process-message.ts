@@ -36,13 +36,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(401).json({ error: 'unauthorized' });
   }
 
-  // Safety net: if somehow a "You:" message slips through the Android
-  // listener, drop it here rather than process and reply to our own message.
+  // Never process messages from the owner's own number — these are
+  // self-texts or loop-back messages that should be completely ignored.
+  const OWNER_NUMBER = '6136979883';
+  const cleanIdentifier = body.contactIdentifier.replace(/\D/g, '');
+  if (cleanIdentifier === OWNER_NUMBER || cleanIdentifier.endsWith(OWNER_NUMBER)) {
+    return res.status(200).json({ conversationId: '', messageId: '', category: 'OTHER',
+      autoSendText: null, needsApproval: false, draftText: null, decisionCreated: null });
+  }
+
+  // Safety net: drop "You:" prefixed messages that slip through
   const bodyLower = body.body.trim().toLowerCase();
   if (bodyLower.startsWith('you:') || bodyLower.startsWith('you :')) {
     return res.status(200).json({ conversationId: '', messageId: '', category: 'OTHER',
       autoSendText: null, needsApproval: false, draftText: null, decisionCreated: null });
   }
+
+  // Handle media messages gracefully — if the body looks like a media
+  // placeholder (empty, or just whitespace/emoji after stripping), note it.
+  const effectiveBody = body.body.trim() ||
+    '[sent a photo or media file — no text content]';
 
   // 1) Find or create the conversation.
   let { data: conv } = await supabaseAdmin
@@ -73,7 +86,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // 2) Insert the incoming message.
   const { data: incomingMsg, error: insertError } = await supabaseAdmin
     .from('messages')
-    .insert({ conversation_id: conv.id, direction: 'incoming', body: body.body, status: 'received' })
+    .insert({ conversation_id: conv.id, direction: 'incoming', body: effectiveBody, status: 'received' })
     .select('*')
     .single();
 
@@ -82,14 +95,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(500).json({ error: 'Failed to save message', detail: insertError?.message });
   }
 
-  // 3) Build history + fetch applicant.
+  // 3) Build history — read up to 60 prior messages for full context.
+  // This is what lets IRIS reply naturally to ongoing conversations
+  // without asking "who is this?" to people with names already saved.
   const { data: priorMessages } = await supabaseAdmin
     .from('messages')
     .select('direction, body')
     .eq('conversation_id', conv.id)
-    .order('created_at', { ascending: true });
+    .order('created_at', { ascending: true })
+    .limit(61); // 60 prior + the one we just inserted
 
-  const history = buildHistory((priorMessages || []).slice(0, -1), conv.summary);
+  const contactName = conv.contact_name || body.contactName || undefined;
+  const history = buildHistory((priorMessages || []).slice(0, -1), conv.summary, contactName);
 
   const { data: applicantRow } = await supabaseAdmin
     .from('applicants')
@@ -137,7 +154,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
   } else {
     // --- Normal classify step ---
-    const classification = await classifyMessage(history, body.body);
+    const classification = await classifyMessage(history, effectiveBody, contactName);
     response.category = classification.category;
     await supabaseAdmin.from('messages').update({ category: classification.category, intent: classification.intent }).eq('id', incomingMsg.id);
 
@@ -155,8 +172,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const nextQ = complete ? null : (conv.opener_asked ? nextMissingQuestion(mergedApplicant) : OPENER_QUESTION);
 
       const draft = await draftReply({
-        category: classification.category, history, message: body.body,
+        category: classification.category, history, message: effectiveBody,
         nextQuestion: nextQ, styleGuidance: styleGuidanceBlock(styleExamples || []),
+        contactName,
       });
 
       response.autoSendText = draft;
@@ -179,21 +197,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     } else if (classification.category === 'SPAM') {
       // Silently dropped
     } else if (isSmsAutoReply) {
-      // SMS personal/work/general — auto-reply using conversation context.
-      // No approval needed for routine replies to people you know.
       const draft = await draftReply({
-        category: classification.category, history, message: body.body,
+        category: classification.category, history, message: effectiveBody,
         nextQuestion: null, styleGuidance: styleGuidanceBlock(styleExamples || []),
+        contactName,
       });
       if (draft) {
         response.autoSendText = draft;
       }
     } else {
-      // Trusted contact (even if classified RENTAL_INQUIRY), or any non-rental
-      // category for an unknown number — always draft-and-wait.
       const draft = await draftReply({
-        category: classification.category, history, message: body.body,
+        category: classification.category, history, message: effectiveBody,
         nextQuestion: null, styleGuidance: styleGuidanceBlock(styleExamples || []),
+        contactName,
       });
       if (draft) {
         response.needsApproval = true;
