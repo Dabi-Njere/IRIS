@@ -17,7 +17,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.work.*
-import com.aireceptionist.whatsapp.NotificationAccessHelper
 import com.aireceptionist.work.SyncWorker
 import java.util.concurrent.TimeUnit
 
@@ -25,30 +24,25 @@ class MainActivity : ComponentActivity() {
 
     private val requestPermissions = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { /* proceed regardless */ }
+    ) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        requestPermissions.launch(
-            arrayOf(
-                Manifest.permission.RECEIVE_SMS,
-                Manifest.permission.READ_SMS,
-                Manifest.permission.SEND_SMS,
-                Manifest.permission.READ_CONTACTS,
-                Manifest.permission.POST_NOTIFICATIONS
-            )
-        )
+        requestPermissions.launch(arrayOf(
+            Manifest.permission.RECEIVE_SMS,
+            Manifest.permission.READ_SMS,
+            Manifest.permission.SEND_SMS,
+            Manifest.permission.READ_CONTACTS,
+            Manifest.permission.POST_NOTIFICATIONS
+        ))
 
-        // Critical for reply speed: ask Android to stop delaying our background
-        // work due to battery optimization. Without this, SMS processing can be
-        // deferred by 15-20 minutes on Pixel phones in battery saver mode.
         requestBatteryOptimizationExemption()
         schedulePeriodicSync()
 
         setContent {
             MaterialTheme {
-                Surface { OnboardingScreen() }
+                Surface { MainScreen() }
             }
         }
     }
@@ -57,10 +51,9 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val pm = getSystemService(PowerManager::class.java)
             if (!pm.isIgnoringBatteryOptimizations(packageName)) {
-                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
                     data = Uri.parse("package:$packageName")
-                }
-                startActivity(intent)
+                })
             }
         }
     }
@@ -73,51 +66,68 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    fun OnboardingScreen() {
-        var notifAccessEnabled by remember {
-            mutableStateOf(NotificationAccessHelper.isEnabled(this))
-        }
+    fun MainScreen() {
+        val pm = getSystemService(PowerManager::class.java)
+        val batteryOk = pm.isIgnoringBatteryOptimizations(packageName)
 
-        Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
+        Column(modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp)) {
+
             Text("IRIS", style = MaterialTheme.typography.headlineMedium)
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(6.dp))
             Text(
-                "Reading messages and replying on your behalf. " +
-                "Everything else — decisions, drafts, conversation history — lives in the dashboard.",
+                "Running in the background, reading SMS and replying on your behalf.",
                 style = MaterialTheme.typography.bodyMedium
             )
-            Spacer(Modifier.height(24.dp))
 
-            // Battery optimization status
-            val pm = getSystemService(PowerManager::class.java)
-            val batteryExempt = pm.isIgnoringBatteryOptimizations(packageName)
+            Spacer(Modifier.height(28.dp))
+
+            // Battery status
             Text(
-                "Battery optimization: " + if (batteryExempt) "EXEMPT (replies will be fast ✓)" else "NOT EXEMPT (replies may be slow — tap below)",
+                "Reply speed: " + if (batteryOk) "✓ Fast (battery optimization exempt)" else "⚠ May be slow — tap below to fix",
                 style = MaterialTheme.typography.bodySmall,
-                color = if (batteryExempt) Color(0xFF6FCF97) else Color(0xFFE2685A)
+                color = if (batteryOk) Color(0xFF6FCF97) else Color(0xFFE2685A)
             )
-            if (!batteryExempt) {
+            if (!batteryOk) {
                 Spacer(Modifier.height(8.dp))
                 Button(onClick = { requestBatteryOptimizationExemption() }) {
                     Text("Fix Reply Speed")
                 }
             }
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
             Text(
-                "WhatsApp notification access: " + if (notifAccessEnabled) "ON" else "OFF",
-                style = MaterialTheme.typography.bodySmall
+                "SMS: Active — replies to all contacts automatically",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF6FCF97)
             )
-            Spacer(Modifier.height(8.dp))
-            Button(onClick = {
-                NotificationAccessHelper.openSettings(this@MainActivity)
-                notifAccessEnabled = NotificationAccessHelper.isEnabled(this@MainActivity)
-            }) { Text("Enable Notification Access") }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "WhatsApp: Paused — coming in a future update",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF9A97A6)
+            )
 
             Spacer(Modifier.height(32.dp))
-            Button(onClick = {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(BuildConfig.DASHBOARD_URL)))
-            }) { Text("Open Dashboard") }
+
+            Button(
+                onClick = {
+                    startActivity(Intent(Intent.ACTION_VIEW,
+                        Uri.parse(BuildConfig.DASHBOARD_URL)))
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Open Dashboard")
+            }
+
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Tip: open the dashboard on your tablet or laptop for the best experience. " +
+                "This phone app runs silently in the background — you don't need to open it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF9A97A6)
+            )
         }
     }
 }
