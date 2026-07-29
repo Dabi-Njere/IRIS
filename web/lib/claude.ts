@@ -1,11 +1,5 @@
-// Server-side only — this is the one place the real Anthropic API key gets
-// used. Neither the Android app nor the browser dashboard ever sees it.
-//
-// Using Haiku, not Sonnet: classify/draft work doesn't need Sonnet-level
-// reasoning, and at personal-app volume the cost difference is the
-// difference between "a couple dollars a month" and "a few cents." Same
-// privacy terms either way (paid API calls aren't used for training) —
-// this is purely a cost/capability tradeoff, not a privacy one.
+// Server-side only — this is the one place the real Anthropic API key lives.
+// Using Haiku: fast, cheap, more than capable for classify/draft work.
 
 export async function callClaude(prompt: string, maxTokens: number): Promise<string> {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
