@@ -39,8 +39,6 @@ export function computeScore(a: Applicant): number {
   return Math.min(score, 10);
 }
 
-// Same fix as the demo: parse natural-language yes/no, and NEVER overwrite a
-// known value with undefined just because this turn's answer didn't parse.
 function parseBool(v: any): boolean | undefined {
   if (typeof v === 'boolean') return v;
   if (typeof v === 'string') {
@@ -84,8 +82,6 @@ export function buildHistory(
   const label = contactName && contactName.trim() ? contactName.trim() : 'Them';
   const asLines = (arr: typeof messages) =>
     arr.map(m => (m.direction === 'incoming' ? `${label}: ` : 'You: ') + m.body).join('\n');
-  // Read up to 60 real messages — gives full context for ongoing conversations
-  // so IRIS never asks "who is this?" to a saved contact it's been talking to.
   const recent = messages.slice(-60);
   if (summary && messages.length > 60) {
     return `Summary of earlier conversation: ${summary}\n\nLast 60 messages:\n${asLines(recent)}`;
@@ -93,12 +89,19 @@ export function buildHistory(
   return asLines(recent);
 }
 
-export async function classifyMessage(history: string, message: string, contactName?: string): Promise<ClassificationResult> {
+export async function classifyMessage(
+  history: string,
+  message: string,
+  contactName?: string,
+  ownerContext?: string
+): Promise<ClassificationResult> {
   const whoTheyAre = contactName
     ? `This message is from "${contactName}" — a saved contact. Do NOT ask who they are.`
     : 'This message is from an unknown number.';
 
-  const prompt = `You are the classification layer for a personal SMS/WhatsApp receptionist app. Read the NEW message in context and output ONLY this JSON, no markdown fences, no commentary:
+  const ownerBlock = ownerContext ? `\nContext about the phone owner:\n${ownerContext}\n` : '';
+
+  const prompt = `You are the classification layer for a personal SMS receptionist app. Read the NEW message in context and output ONLY this JSON, no markdown fences, no commentary:
 {
   "category": "RENTAL_INQUIRY" | "GENERAL_CONVERSATION" | "SPAM" | "WORK" | "PERSONAL" | "OTHER",
   "intent": "short_tag_or_null",
@@ -106,6 +109,9 @@ export async function classifyMessage(history: string, message: string, contactN
 }
 
 ${whoTheyAre}
+${ownerBlock}
+IMPORTANT — context awareness:
+The owner may be LOOKING FOR a place to rent, not just renting one out. Read the conversation carefully before classifying as RENTAL_INQUIRY — only use that category if someone is inquiring about a place the OWNER is renting out. If the context suggests the owner is the one looking for housing, classify as PERSONAL or GENERAL_CONVERSATION instead.
 
 Conversation so far:
 ${history}
@@ -113,15 +119,11 @@ ${history}
 New message from them:
 "${message}"
 
-IMPORTANT — emoji and short replies:
-If the conversation so far is a rental screening Q&A, classify continuations as RENTAL_INQUIRY even if the new message is just an emoji or very short reply. Interpret emoji responses to yes/no questions using context:
-- 👍 🙌 ✅ 👌 "yep" "yeah" "sure" "ok" = yes/true for whatever was just asked
-- 👎 🚫 ❌ "nope" "nah" "no" = no/false for whatever was just asked
-- ❤️ 😊 🥰 after a warm reply = positive acknowledgment, no field to extract
+Emoji/short reply handling — if conversation is a rental screening Q&A:
+- 👍 ✅ "yep" "yeah" = yes/true for whatever was just asked
+- 👎 ❌ "nope" "nah" "no" = no/false for whatever was just asked
 
-If category is RENTAL_INQUIRY, extract anything mentioned into extracted_info using these exact keys when applicable: moveInDate, occupants, employmentStatus, hasPets, petDetails, smoker, creditCheckOk, incomeVerificationOk, viewingRequestedTime, name.
-For hasPets, smoker, creditCheckOk, incomeVerificationOk: use real JSON booleans (true/false). A 👍 answering "do you smoke?" = smoker: false. A 👎 answering "do you have pets?" = hasPets: false. Use the conversation context to determine which field an emoji is answering.
-Omit any key not mentioned. intent can be null.`;
+If RENTAL_INQUIRY, extract into extracted_info: moveInDate, occupants, employmentStatus, hasPets, petDetails, smoker, creditCheckOk, incomeVerificationOk, viewingRequestedTime, name. Use real JSON booleans. Omit keys not mentioned. intent can be null.`;
 
   let raw = await callClaude(prompt, 400);
   raw = stripJsonFences(raw);
@@ -149,27 +151,27 @@ export async function draftReply(opts: {
   let instructions: string;
   if (opts.category === 'RENTAL_INQUIRY') {
     instructions = opts.nextQuestion
-      ? `${nameContext}You're replying on behalf of a landlord to a rental inquiry. Briefly acknowledge/answer what they just said (don't re-ask anything they already told you, here or earlier), then ask — in your own natural phrasing — exactly this and only this: "${opts.nextQuestion}". One question only.`
-      : `${nameContext}You're replying on behalf of a landlord to a rental inquiry. Every required field has been collected — do NOT ask anything further. Just acknowledge what they said and let them know you'll follow up shortly with next steps. Don't invent viewing times or addresses.`;
+      ? `${nameContext}You're replying on behalf of a landlord to a rental inquiry. Briefly acknowledge what they said, then ask exactly this — in natural phrasing — and only this: "${opts.nextQuestion}". One question only, nothing else.`
+      : `${nameContext}You're replying on behalf of a landlord. Every required field has been collected — do NOT ask anything further. Let them know you'll follow up shortly. Don't invent times or addresses.`;
   } else {
-    instructions = `${nameContext}You're replying on behalf of the phone's owner. Reply naturally and conversationally, SMS length. Use the conversation history to understand context — never ask who the person is or what they were talking about if it's already in the history. If they sent a photo or media with no text, acknowledge it warmly and briefly. If asked about the owner's personal details, use the owner context below — do not guess or make things up.`;
+    instructions = `${nameContext}You're replying on behalf of the phone's owner. Reply naturally and conversationally, SMS length — like a real person texting back, not a formal response. Read the full conversation before replying so you understand the context. Never ask who the person is. If they sent media with no text, acknowledge it warmly. If asked about the owner's personal details, use the owner context below — never guess or make things up.`;
   }
 
   const prompt = `${instructions}${ownerBlock}${opts.styleGuidance}
 
-Conversation so far (read ALL of this before replying — understand what's been discussed, what's been agreed, what's still open):
+Conversation so far (read ALL of this — understand what's been discussed, agreed, and what's still open before writing anything):
 ${opts.history}
 
 Their latest message:
 "${opts.message}"
 
-Before writing your reply, consider:
+Before replying, think about:
 - What is this conversation actually about?
 - What has already been said or agreed — don't repeat or contradict it
-- What does this latest message actually need — a direct answer, an acknowledgment, a question back?
-- Does anything in the owner profile apply here?
+- What does this message actually need — an answer, an acknowledgment, a question?
+- Does the owner profile apply to anything being asked?
 
-Reply with ONLY the SMS text to send — no quotes, no preamble, no markdown. Keep it natural and brief like a real text.`;
+Reply with ONLY the SMS text — no quotes, no preamble, no markdown. Natural and brief.`;
 
   const raw = await callClaude(prompt, 350);
   return raw.trim();
@@ -202,6 +204,6 @@ ${fullText}`;
 
 export function styleGuidanceBlock(examples: Array<{ original: string; edited: string }>): string {
   if (examples.length === 0) return '';
-  return `\n\nThe owner has edited past drafts like this before — match their tone/phrasing style, but don't copy these verbatim:\n` +
-    examples.map(e => `- Was: "${e.original}"\n  Owner changed it to: "${e.edited}"`).join('\n');
+  return `\n\nThe owner has edited past drafts like this — match their tone/style but don't copy verbatim:\n` +
+    examples.map(e => `- Was: "${e.original}"\n  Changed to: "${e.edited}"`).join('\n');
 }
