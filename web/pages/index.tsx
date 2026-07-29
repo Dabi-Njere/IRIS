@@ -4,14 +4,9 @@ const S = {
   page: { maxWidth: 700, margin: '0 auto', padding: '20px 16px 80px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif', background: '#1C1B22', minHeight: '100vh', color: '#F5F3F0' } as React.CSSProperties,
   card: { background: '#25232C', border: '1px solid #3A3744', borderRadius: 14, padding: 16, marginBottom: 14 } as React.CSSProperties,
   title: { fontSize: 11, color: '#9A97A6', textTransform: 'uppercase' as const, letterSpacing: '.08em', fontFamily: 'monospace', marginBottom: 10 },
-  btn: (color: string) => ({ border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, fontWeight: 700, cursor: 'pointer', background: color, color: color === '#6FCF97' ? '#0E2615' : color === '#FF8A5B' ? '#231509' : '#F5F3F0' } as React.CSSProperties),
+  btn: (color: string, text = '#F5F3F0') => ({ border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, fontWeight: 700, cursor: 'pointer', background: color, color: text } as React.CSSProperties),
   input: { background: '#2D2B36', border: '1px solid #3A3744', borderRadius: 8, color: '#F5F3F0', padding: '9px 11px', fontSize: 13, width: '100%', boxSizing: 'border-box' as const },
-  tag: { fontFamily: 'monospace', fontSize: 11, color: '#9A97A6' },
-  muted: { color: '#9A97A6', fontSize: 13 },
-  accent: { color: '#FF8A5B' },
-  success: { color: '#6FCF97' },
-  danger: { color: '#E2685A' },
-  row: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' as const },
+  muted: { color: '#9A97A6', fontSize: 13 } as React.CSSProperties,
 };
 
 export default function Dashboard() {
@@ -32,7 +27,7 @@ export default function Dashboard() {
 
   const showToast = (msg: string) => {
     setToast(msg);
-    setTimeout(() => setToast(''), 3000);
+    setTimeout(() => setToast(''), 3500);
   };
 
   const load = useCallback(async () => {
@@ -46,8 +41,7 @@ export default function Dashboard() {
         setError(`API error ${dashRes.status}: ${txt.slice(0, 200)}`);
         return;
       }
-      const json = await dashRes.json();
-      setData(json);
+      setData(await dashRes.json());
       setError('');
       if (profileRes.ok) {
         const p = await profileRes.json();
@@ -97,16 +91,15 @@ export default function Dashboard() {
         body: JSON.stringify(profileForm),
       });
       if (r.ok) {
-        showToast('✓ Profile saved — IRIS will use this from now on');
+        showToast('✓ Profile saved — IRIS will use this going forward');
         setProfileEditing(false);
-        const p = await r.json();
-        setProfile(p);
+        setProfile(await r.json());
       } else showToast('Failed to save profile');
     } finally { setProfileSaving(false); }
   };
 
   const addSchedule = async () => {
-    if (!schedPhone.trim() || !schedTheme.trim()) { showToast('Need a phone number and theme'); return; }
+    if (!schedPhone.trim() || !schedTheme.trim()) { showToast('Enter a phone number and theme first'); return; }
     setSchedBusy(true);
     try {
       const r = await fetch('/api/scheduled-rules', {
@@ -131,43 +124,41 @@ export default function Dashboard() {
 
   return (
     <div style={S.page}>
-      {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
-        <h1 style={{ margin: 0, fontSize: 22 }}>IRIS <span style={S.accent}>Dashboard</span></h1>
+        <h1 style={{ margin: 0, fontSize: 22 }}>IRIS <span style={{ color: '#FF8A5B' }}>Dashboard</span></h1>
         <button style={S.btn('#3A3744')} onClick={load}>Refresh</button>
       </div>
 
-      {/* Toast */}
       {toast && <div style={{ background: '#2D2B36', border: '1px solid #6FCF97', borderRadius: 10, padding: '10px 14px', marginBottom: 14, color: '#6FCF97', fontSize: 13 }}>{toast}</div>}
-
-      {/* Error */}
       {error && <div style={{ background: '#3A2A2A', border: '1px solid #E2685A', borderRadius: 10, padding: '10px 14px', marginBottom: 14, color: '#E2685A', fontSize: 13 }}>{error}</div>}
-
-      {/* Loading */}
       {!data && !error && <div style={{ ...S.muted, padding: 40, textAlign: 'center' }}>Loading…</div>}
 
       {data && <>
-        {/* DECISIONS */}
+        {/* DECISIONS + QUEUE */}
         <div style={S.card}>
           <div style={S.title}>Needs Your Decision</div>
-          {(!data.decisions?.length && !data.queue?.length) && <div style={S.muted}>Nothing waiting on you right now — IRIS is handling things.</div>}
+          {(!data.decisions?.length && !data.queue?.length) && (
+            <div style={S.muted}>Nothing waiting on you — IRIS is handling things.</div>
+          )}
 
           {data.decisions?.map((d: any) => (
             <div key={d.id} style={{ border: '1px solid #FF8A5B', background: '#5A3B2C', borderRadius: 12, padding: 12, marginBottom: 10 }}>
               <div style={{ fontWeight: 700, marginBottom: 6, fontSize: 14 }}>
-                {d.type === 'viewing' ? `📅 ${d.conversations?.contact_name || d.conversations?.contact_identifier} picked: ${d.slot}` : `📋 ${d.conversations?.contact_name || d.conversations?.contact_identifier} — applicant summary`}
+                {d.type === 'viewing'
+                  ? `📅 ${d.conversations?.contact_name || d.conversations?.contact_identifier} picked: ${d.slot}`
+                  : `📋 ${d.conversations?.contact_name || d.conversations?.contact_identifier} — ready for your call`}
               </div>
               <textarea
                 defaultValue={editing[d.id] ?? ''}
                 placeholder="Edit the reply before sending (optional)"
-                onChange={e => setEditing(prev => ({ ...prev, [d.id]: e.target.value }))}
+                onChange={e => setEditing(p => ({ ...p, [d.id]: e.target.value }))}
                 style={{ ...S.input, minHeight: 70, marginBottom: 8, resize: 'vertical' }}
               />
-              <div style={S.row}>
-                <button style={{ ...S.btn('#6FCF97'), flex: 1 }} disabled={busy[d.id]} onClick={() => resolveDecision(d.id, 'approved')}>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button style={{ ...S.btn('#6FCF97', '#0E2615'), flex: 1 }} disabled={busy[d.id]} onClick={() => resolveDecision(d.id, 'approved')}>
                   {busy[d.id] ? '…' : d.type === 'viewing' ? 'Confirm Time' : 'Move Forward'}
                 </button>
-                <button style={{ ...S.btn('#E2685A'), flex: 1 }} disabled={busy[d.id]} onClick={() => resolveDecision(d.id, 'declined')}>
+                <button style={{ ...S.btn('transparent'), border: '1px solid #E2685A', color: '#E2685A', flex: 1 }} disabled={busy[d.id]} onClick={() => resolveDecision(d.id, 'declined')}>
                   {busy[d.id] ? '…' : d.type === 'viewing' ? 'Suggest Different' : 'Not a Fit'}
                 </button>
               </div>
@@ -176,17 +167,19 @@ export default function Dashboard() {
 
           {data.queue?.map((m: any) => (
             <div key={m.id} style={{ border: '1px solid #3A3744', background: '#2D2B36', borderRadius: 12, padding: 12, marginBottom: 10 }}>
-              <div style={{ ...S.tag, marginBottom: 6 }}>{m.conversations?.contact_name || m.conversations?.contact_identifier} · {m.category}</div>
+              <div style={{ fontFamily: 'monospace', fontSize: 11, color: '#9A97A6', marginBottom: 6 }}>
+                {m.conversations?.contact_name || m.conversations?.contact_identifier} · {m.category}
+              </div>
               <textarea
                 defaultValue={editing[m.id] ?? m.body}
-                onChange={e => setEditing(prev => ({ ...prev, [m.id]: e.target.value }))}
+                onChange={e => setEditing(p => ({ ...p, [m.id]: e.target.value }))}
                 style={{ ...S.input, minHeight: 60, marginBottom: 8, resize: 'vertical' }}
               />
-              <div style={S.row}>
-                <button style={{ ...S.btn('#6FCF97'), flex: 1 }} disabled={busy[m.id]} onClick={() => resolveMessage(m.id, 'approve')}>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button style={{ ...S.btn('#6FCF97', '#0E2615'), flex: 1 }} disabled={busy[m.id]} onClick={() => resolveMessage(m.id, 'approve')}>
                   {busy[m.id] ? '…' : 'Approve & Send'}
                 </button>
-                <button style={{ ...S.btn('#E2685A'), flex: 1 }} disabled={busy[m.id]} onClick={() => resolveMessage(m.id, 'decline')}>
+                <button style={{ ...S.btn('transparent'), border: '1px solid #E2685A', color: '#E2685A', flex: 1 }} disabled={busy[m.id]} onClick={() => resolveMessage(m.id, 'decline')}>
                   Decline
                 </button>
               </div>
@@ -201,7 +194,7 @@ export default function Dashboard() {
             {data.applicants.map((a: any) => (
               <div key={a.conversation_id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid #3A3744', fontSize: 13 }}>
                 <span>{a.conversations?.contact_name || a.conversations?.contact_identifier}</span>
-                <span style={{ fontFamily: 'monospace', ...S.accent }}>{a.qualification_score}/10</span>
+                <span style={{ fontFamily: 'monospace', color: '#FF8A5B' }}>{a.qualification_score}/10</span>
               </div>
             ))}
           </div>
@@ -210,17 +203,17 @@ export default function Dashboard() {
         {/* RECENT CONVERSATIONS */}
         <div style={S.card}>
           <div style={S.title}>Recent Conversations</div>
-          {(!data.conversations?.length) && <div style={S.muted}>No conversations yet.</div>}
+          {!data.conversations?.length && <div style={S.muted}>No conversations yet.</div>}
           {data.conversations?.map((c: any) => {
             const msgs = (c.messages || []).sort((a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
             const last = msgs[msgs.length - 1];
             return (
               <div key={c.id} style={{ padding: '10px 0', borderBottom: '1px solid #3A3744' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
                   <span style={{ fontWeight: 600, fontSize: 14 }}>{c.contact_name || c.contact_identifier}</span>
-                  <span style={{ ...S.tag, fontSize: 10 }}>{c.channel}{c.trusted ? ' · saved' : ' · unknown'}</span>
+                  <span style={{ fontFamily: 'monospace', fontSize: 10, color: '#9A97A6' }}>{c.channel}{c.trusted ? ' · saved' : ' · unknown'}</span>
                 </div>
-                {last && <div style={{ ...S.muted, fontSize: 12.5 }}>{last.direction === 'outgoing' ? 'IRIS: ' : 'Them: '}{last.body?.slice(0, 100)}{(last.body?.length || 0) > 100 ? '…' : ''}</div>}
+                {last && <div style={{ color: '#9A97A6', fontSize: 12.5 }}>{last.direction === 'outgoing' ? 'IRIS: ' : 'Them: '}{(last.body || '').slice(0, 100)}{(last.body || '').length > 100 ? '…' : ''}</div>}
               </div>
             );
           })}
@@ -228,36 +221,36 @@ export default function Dashboard() {
 
         {/* OWNER PROFILE */}
         <div style={S.card}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <div style={S.title}>My Profile</div>
             <button style={S.btn('#3A3744')} onClick={() => { setProfileEditing(!profileEditing); setProfileForm(profile || {}); }}>
               {profileEditing ? 'Cancel' : 'Edit'}
             </button>
           </div>
-          <div style={{ ...S.muted, fontSize: 12, marginBottom: 10 }}>
-            IRIS uses this to answer questions about you accurately — "where do you live?", "what do you do?", etc.
+          <div style={{ color: '#9A97A6', fontSize: 12, marginBottom: 10 }}>
+            IRIS uses this to answer questions about you accurately — where you live, what you do, etc.
           </div>
 
           {!profileEditing ? (
-            profile && profile.name ? (
+            profile?.name ? (
               <div>
-                {[['Name', profile.name], ['Age', profile.age], ['Occupation', profile.occupation], ['Employer', profile.employer], ['Location', profile.location], ['Physical', profile.physical_description], ['Other context', profile.other_context]].map(([k, v]) => v ? (
-                  <div key={k as string} style={{ display: 'flex', gap: 8, padding: '6px 0', borderBottom: '1px solid #3A3744', fontSize: 13 }}>
-                    <span style={S.muted}>{k}:</span><span>{v}</span>
+                {([['Name', profile.name], ['Age', profile.age], ['Occupation', profile.occupation], ['Employer', profile.employer], ['Location', profile.location], ['Physical', profile.physical_description], ['Other context', profile.other_context]] as [string, any][]).map(([k, v]) => v ? (
+                  <div key={k} style={{ display: 'flex', gap: 8, padding: '6px 0', borderBottom: '1px solid #3A3744', fontSize: 13 }}>
+                    <span style={{ color: '#9A97A6', minWidth: 90 }}>{k}</span><span>{v}</span>
                   </div>
                 ) : null)}
               </div>
-            ) : <div style={S.muted}>No profile set yet — click Edit to add your details.</div>
+            ) : <div style={S.muted}>No profile yet — click Edit to add your details.</div>
           ) : (
             <div>
-              {([['name', 'Your name'], ['age', 'Age'], ['occupation', 'Occupation (e.g. Finance professional)'], ['employer', 'Employer (e.g. Combined Insurance)'], ['location', 'Location (e.g. Thornhill, Ontario)'], ['physical_description', 'Physical description (optional)'], ['other_context', 'Anything else IRIS should know about you']] as [string, string][]).map(([key, placeholder]) => (
+              {([['name', 'Your name'], ['age', 'Age'], ['occupation', 'Occupation'], ['employer', 'Employer'], ['location', 'Location'], ['physical_description', 'Physical description (optional)'], ['other_context', 'Nigerian/Pidgin slang, anything else IRIS should know']] as [string, string][]).map(([key, placeholder]) => (
                 <input key={key} type="text" placeholder={placeholder}
                   value={profileForm[key] || ''}
                   onChange={e => setProfileForm((p: any) => ({ ...p, [key]: e.target.value }))}
                   style={{ ...S.input, marginBottom: 8 }}
                 />
               ))}
-              <button style={{ ...S.btn('#FF8A5B'), width: '100%' }} disabled={profileSaving} onClick={saveProfile}>
+              <button style={{ ...S.btn('#FF8A5B', '#231509'), width: '100%' }} disabled={profileSaving} onClick={saveProfile}>
                 {profileSaving ? 'Saving…' : 'Save Profile'}
               </button>
             </div>
@@ -267,21 +260,20 @@ export default function Dashboard() {
         {/* SCHEDULED MESSAGES */}
         <div style={S.card}>
           <div style={S.title}>Scheduled Messages</div>
-          {(!data.scheduledRules?.length) && <div style={{ ...S.muted, marginBottom: 12 }}>No scheduled messages yet — add one below.</div>}
+          {!data.scheduledRules?.length && <div style={{ ...S.muted, marginBottom: 12 }}>No scheduled messages yet.</div>}
           {data.scheduledRules?.map((r: any) => (
             <div key={r.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #3A3744', flexWrap: 'wrap' as const }}>
-              <span style={{ fontFamily: 'monospace', ...S.accent, fontWeight: 700 }}>{r.send_time}</span>
-              <span style={S.muted}>→</span>
+              <span style={{ fontFamily: 'monospace', color: '#FF8A5B', fontWeight: 700 }}>{r.send_time}</span>
+              <span style={{ color: '#9A97A6' }}>→</span>
               <span style={{ fontSize: 13 }}>{r.conversations?.contact_name || r.conversations?.contact_identifier}</span>
-              <span style={{ flex: 1, ...S.muted, fontSize: 12 }}>{r.theme}</span>
+              <span style={{ flex: 1, color: '#9A97A6', fontSize: 12 }}>{r.theme}</span>
               <button style={{ background: 'transparent', border: '1px solid #E2685A', color: '#E2685A', borderRadius: 6, padding: '3px 9px', fontSize: 12, cursor: 'pointer' }} onClick={() => deleteSchedule(r.id)}>Remove</button>
             </div>
           ))}
-
-          <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #3A3744' }}>
-            <div style={{ ...S.muted, fontSize: 12, marginBottom: 10 }}>Add a scheduled message — SMS only (WhatsApp can only reply, not initiate)</div>
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #3A3744' }}>
+            <div style={{ color: '#9A97A6', fontSize: 12, marginBottom: 10 }}>Add a scheduled message — SMS only</div>
             <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' as const }}>
-              <input type="tel" placeholder="+15551234567 (phone number)" value={schedPhone} onChange={e => setSchedPhone(e.target.value)}
+              <input type="tel" placeholder="+14162712651" value={schedPhone} onChange={e => setSchedPhone(e.target.value)}
                 style={{ ...S.input, flex: '1 1 180px' }} />
               <input type="text" placeholder="Name (optional)" value={schedName} onChange={e => setSchedName(e.target.value)}
                 style={{ ...S.input, flex: '1 1 130px' }} />
@@ -291,7 +283,7 @@ export default function Dashboard() {
             <input type="text" placeholder='Theme — e.g. "warm good morning message for my partner"'
               value={schedTheme} onChange={e => setSchedTheme(e.target.value)}
               style={{ ...S.input, marginBottom: 10 }} />
-            <button style={{ ...S.btn('#FF8A5B'), width: '100%' }} disabled={schedBusy} onClick={addSchedule}>
+            <button style={{ ...S.btn('#FF8A5B', '#231509'), width: '100%' }} disabled={schedBusy} onClick={addSchedule}>
               {schedBusy ? 'Adding…' : '+ Add Scheduled Message'}
             </button>
           </div>
