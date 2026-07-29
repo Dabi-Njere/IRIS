@@ -1,4 +1,4 @@
-import { callClaude, stripJsonFences } from './claude';
+import { callClaude, stripJsonFences } from '../../lib/claude';
 import { Applicant, Category, ClassificationResult } from './types';
 
 export const MOCK_SLOTS = ['Friday 6 PM', 'Saturday 11 AM', 'Sunday 2 PM'];
