@@ -1,1 +1,26 @@
+import type { NextApiRequest, NextApiResponse } from 'next';
+import { supabaseAdmin } from '../../lib/supabase';
 
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method === 'GET') {
+    const { data } = await supabaseAdmin
+      .from('owner_profile').select('*').eq('id', 1).maybeSingle();
+    return res.status(200).json(data || {});
+  }
+
+  if (req.method === 'POST') {
+    const { name, age, occupation, employer, location, physical_description, other_context } = req.body;
+    const { data, error } = await supabaseAdmin
+      .from('owner_profile')
+      .upsert({
+        id: 1, name, age: age ? parseInt(age) : null,
+        occupation, employer, location, physical_description, other_context,
+        updated_at: new Date().toISOString(),
+      })
+      .select('*').single();
+    if (error) return res.status(400).json({ error: error.message });
+    return res.status(200).json(data);
+  }
+
+  res.status(405).end();
+}
