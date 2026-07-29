@@ -1,258 +1,209 @@
-import type { NextApiRequest, NextApiResponse } from 'next';
-import { supabaseAdmin } from '../../lib/supabase';
-import {
-  classifyMessage, draftReply, mergeApplicant, computeScore, isApplicantComplete,
-  nextMissingQuestion, OPENER_QUESTION, buildHistory, pickSlot, MOCK_SLOTS,
-  styleGuidanceBlock, summarizeConversation,
-} from '../../lib/pipeline';
-import { Applicant } from '../../lib/types';
+import { callClaude, stripJsonFences } from './claude';
+import { Applicant, Category, ClassificationResult } from './types';
 
-// What Android sends for every incoming SMS/WhatsApp message.
-interface ProcessRequest {
-  deviceSecret: string;
-  channel: 'sms' | 'whatsapp';
-  contactIdentifier: string; // phone number (SMS) or WhatsApp display name
-  contactName?: string;
-  trusted: boolean;          // Android determined this via ContactsContract.PhoneLookup (SMS) or a contacts cross-check (WhatsApp)
-  body: string;
+export const MOCK_SLOTS = ['Friday 6 PM', 'Saturday 11 AM', 'Sunday 2 PM'];
+
+export const OPENER_QUESTION =
+  "What are you looking for, and tell me a bit about your situation (move-in timing, household, etc.)?";
+
+const RENTAL_QUESTIONS: Array<[keyof Applicant, string]> = [
+  ['moveInDate', 'When are you hoping to move in?'],
+  ['occupants', 'How many people will be living there?'],
+  ['employmentStatus', 'Could you share your current employment status?'],
+  ['hasPets', 'Do you have any pets?'],
+  ['smoker', 'Just to check — do you smoke?'],
+  ['creditCheckOk', 'Would you be okay with a credit check as part of the application?'],
+  ['incomeVerificationOk', 'Would you be able to provide income verification (pay stubs, offer letter, etc.)?'],
+];
+
+export function nextMissingQuestion(a: Applicant): string | null {
+  for (const [field, question] of RENTAL_QUESTIONS) {
+    if (a[field] === undefined) return question;
+  }
+  return null;
 }
 
-// What Android gets back — enough to decide what to actually DO on-device.
-interface ProcessResponse {
-  conversationId: string;
-  messageId: string;
-  category: string;
-  autoSendText: string | null;   // if set, Android should send this immediately (no approval needed)
-  needsApproval: boolean;        // if true, show a notification and wait for the owner
-  draftText: string | null;      // the draft to show if needsApproval
-  decisionCreated: 'qualify' | 'viewing' | null;
+export function isApplicantComplete(a: Applicant): boolean {
+  return RENTAL_QUESTIONS.every(([field]) => a[field] !== undefined);
 }
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'POST') return res.status(405).end();
+export function computeScore(a: Applicant): number {
+  let score = 0;
+  if (a.moveInDate) score += 1;
+  if (a.occupants !== undefined) score += 1;
+  if (a.employmentStatus) score += 2;
+  if (a.incomeVerificationOk === true) score += 2;
+  if (a.creditCheckOk === true) score += 2;
+  if (a.hasPets === false) score += 1;
+  if (a.smoker === false) score += 1;
+  return Math.min(score, 10);
+}
 
-  const body: ProcessRequest = req.body;
-  if (body.deviceSecret !== process.env.DEVICE_SHARED_SECRET) {
-    return res.status(401).json({ error: 'unauthorized' });
+function parseBool(v: any): boolean | undefined {
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    if (['true', 'yes', 'y', 'yeah', 'yep'].includes(s)) return true;
+    if (['false', 'no', 'n', 'nope', 'none', 'nah'].includes(s)) return false;
   }
+  return undefined;
+}
 
-  // Never process messages from the owner's own number — these are
-  // self-texts or loop-back messages that should be completely ignored.
-  const OWNER_NUMBER = '6136979883';
-  const cleanIdentifier = body.contactIdentifier.replace(/\D/g, '');
-  if (cleanIdentifier === OWNER_NUMBER || cleanIdentifier.endsWith(OWNER_NUMBER)) {
-    return res.status(200).json({ conversationId: '', messageId: '', category: 'OTHER',
-      autoSendText: null, needsApproval: false, draftText: null, decisionCreated: null });
-  }
-
-  // Safety net: drop "You:" prefixed messages that slip through
-  const bodyLower = body.body.trim().toLowerCase();
-  if (bodyLower.startsWith('you:') || bodyLower.startsWith('you :')) {
-    return res.status(200).json({ conversationId: '', messageId: '', category: 'OTHER',
-      autoSendText: null, needsApproval: false, draftText: null, decisionCreated: null });
-  }
-
-  // Handle media messages gracefully — if the body looks like a media
-  // placeholder (empty, or just whitespace/emoji after stripping), note it.
-  const effectiveBody = body.body.trim() ||
-    '[sent a photo or media file — no text content]';
-
-  // 1) Find or create the conversation.
-  let { data: conv } = await supabaseAdmin
-    .from('conversations')
-    .select('*')
-    .eq('channel', body.channel)
-    .eq('contact_identifier', body.contactIdentifier)
-    .maybeSingle();
-
-  if (!conv) {
-    const { data: created, error: convError } = await supabaseAdmin
-      .from('conversations')
-      .insert({
-        channel: body.channel,
-        contact_identifier: body.contactIdentifier,
-        contact_name: body.contactName ?? null,
-        trusted: body.trusted,
-      })
-      .select('*')
-      .single();
-    if (convError || !created) {
-      console.error('Failed to create conversation:', convError);
-      return res.status(500).json({ error: 'Failed to create conversation', detail: convError?.message });
+export function mergeApplicant(existing: Applicant, info: Record<string, any>): Applicant {
+  const a: Applicant = { ...existing };
+  const setBool = (key: keyof Applicant) => {
+    if (info[key] !== undefined) {
+      const parsed = parseBool(info[key]);
+      if (parsed !== undefined) (a as any)[key] = parsed;
     }
-    conv = created;
-  }
-
-  // 2) Insert the incoming message.
-  const { data: incomingMsg, error: insertError } = await supabaseAdmin
-    .from('messages')
-    .insert({ conversation_id: conv.id, direction: 'incoming', body: effectiveBody, status: 'received' })
-    .select('*')
-    .single();
-
-  if (insertError || !incomingMsg) {
-    console.error('Failed to insert message:', insertError);
-    return res.status(500).json({ error: 'Failed to save message', detail: insertError?.message });
-  }
-
-  // 3) Build history — read up to 60 prior messages for full context.
-  // This is what lets IRIS reply naturally to ongoing conversations
-  // without asking "who is this?" to people with names already saved.
-  const { data: priorMessages } = await supabaseAdmin
-    .from('messages')
-    .select('direction, body')
-    .eq('conversation_id', conv.id)
-    .order('created_at', { ascending: true })
-    .limit(61); // 60 prior + the one we just inserted
-
-  const contactName = conv.contact_name || body.contactName || undefined;
-  const history = buildHistory((priorMessages || []).slice(0, -1), conv.summary, contactName);
-
-  const { data: applicantRow } = await supabaseAdmin
-    .from('applicants')
-    .select('*')
-    .eq('conversation_id', conv.id)
-    .maybeSingle();
-
-  const applicant: Applicant = applicantRow ? {
-    name: applicantRow.name, moveInDate: applicantRow.move_in_date, occupants: applicantRow.occupants,
-    hasPets: applicantRow.has_pets, petDetails: applicantRow.pet_details, smoker: applicantRow.smoker,
-    employmentStatus: applicantRow.employment_status, incomeVerificationOk: applicantRow.income_verification_ok,
-    creditCheckOk: applicantRow.credit_check_ok, viewingRequestedTime: applicantRow.viewing_requested_time,
-    qualificationScore: applicantRow.qualification_score,
-  } : {};
-
-  const { data: styleExamples } = await supabaseAdmin
-    .from('style_examples')
-    .select('original, edited')
-    .order('created_at', { ascending: false })
-    .limit(5);
-
-  // Fetch owner profile — injected into every draft so IRIS never gets
-  // basic facts about the owner wrong when replying to personal texts.
-  const { data: ownerProfile } = await supabaseAdmin
-    .from('owner_profile')
-    .select('*')
-    .eq('id', 1)
-    .maybeSingle();
-
-  const ownerContext = ownerProfile ? `
-Owner context (facts about the person whose phone this is — use this to answer questions accurately):
-- Name: ${ownerProfile.name || 'not set'}
-- Age: ${ownerProfile.age || 'not set'}
-- Occupation: ${ownerProfile.occupation || 'not set'}${ownerProfile.employer ? ` at ${ownerProfile.employer}` : ''}
-- Location: ${ownerProfile.location || 'not set'}
-- Physical: ${ownerProfile.physical_description || 'not set'}${ownerProfile.other_context ? `\n- Other: ${ownerProfile.other_context}` : ''}
-` : '';
-
-  const response: ProcessResponse = {
-    conversationId: conv.id, messageId: incomingMsg.id, category: 'OTHER',
-    autoSendText: null, needsApproval: false, draftText: null, decisionCreated: null,
   };
+  if (info.moveInDate) a.moveInDate = info.moveInDate;
+  if (info.occupants !== undefined) {
+    const n = parseInt(info.occupants, 10);
+    a.occupants = isNaN(n) ? info.occupants : n;
+  }
+  setBool('hasPets');
+  if (info.petDetails) a.petDetails = info.petDetails;
+  setBool('smoker');
+  if (info.employmentStatus) a.employmentStatus = info.employmentStatus;
+  setBool('incomeVerificationOk');
+  setBool('creditCheckOk');
+  if (info.viewingRequestedTime) a.viewingRequestedTime = info.viewingRequestedTime;
+  if (info.name) a.name = info.name;
+  return a;
+}
 
-  // --- Viewing slot picking sub-flow (only reachable after a qualify decision was approved) ---
-  if (conv.viewing_slots_offered && !conv.viewing_confirmed) {
-    const slot = await pickSlot(body.body, MOCK_SLOTS);
-    if (slot) {
-      const { data: existingDecision } = await supabaseAdmin
-        .from('decisions').select('id').eq('conversation_id', conv.id).eq('type', 'viewing').eq('status', 'pending').maybeSingle();
-      if (!existingDecision) {
-        response.autoSendText = "Got it — let me just confirm that and get right back to you!";
-        await supabaseAdmin.from('decisions').insert({
-          conversation_id: conv.id, type: 'viewing', slot, status: 'pending',
-          draft_message: `Great, ${slot} works perfectly — see you then! I'll send the address closer to the time.`,
-        });
-        response.decisionCreated = 'viewing';
-      } else {
-        response.autoSendText = "Just confirming with the owner now — one moment!";
-      }
-    } else {
-      response.autoSendText = `No worries — would any of these work instead? ${MOCK_SLOTS.join(', ')}`;
-    }
+export function buildHistory(
+  messages: Array<{ direction: string; body: string }>,
+  summary: string | null,
+  contactName?: string
+): string {
+  if (messages.length === 0) return '(none)';
+  const label = contactName && contactName.trim() ? contactName.trim() : 'Them';
+  const asLines = (arr: typeof messages) =>
+    arr.map(m => (m.direction === 'incoming' ? `${label}: ` : 'You: ') + m.body).join('\n');
+  const recent = messages.slice(-60);
+  if (summary && messages.length > 60) {
+    return `Summary of earlier conversation: ${summary}\n\nLast 60 messages:\n${asLines(recent)}`;
+  }
+  return asLines(recent);
+}
+
+export async function classifyMessage(
+  history: string,
+  message: string,
+  contactName?: string,
+  ownerContext?: string
+): Promise<ClassificationResult> {
+  const whoTheyAre = contactName
+    ? `This message is from "${contactName}" — a saved contact. Do NOT ask who they are.`
+    : 'This message is from an unknown number.';
+
+  const ownerBlock = ownerContext ? `\nContext about the phone owner:\n${ownerContext}\n` : '';
+
+  const prompt = `You are the classification layer for a personal SMS receptionist app. Read the NEW message in context and output ONLY this JSON, no markdown fences, no commentary:
+{
+  "category": "RENTAL_INQUIRY" | "GENERAL_CONVERSATION" | "SPAM" | "WORK" | "PERSONAL" | "OTHER",
+  "intent": "short_tag_or_null",
+  "extracted_info": { }
+}
+
+${whoTheyAre}
+${ownerBlock}
+IMPORTANT — context awareness:
+The owner may be LOOKING FOR a place to rent, not just renting one out. Read the conversation carefully before classifying as RENTAL_INQUIRY — only use that category if someone is inquiring about a place the OWNER is renting out. If the context suggests the owner is the one looking for housing, classify as PERSONAL or GENERAL_CONVERSATION instead.
+
+Conversation so far:
+${history}
+
+New message from them:
+"${message}"
+
+Emoji/short reply handling — if conversation is a rental screening Q&A:
+- 👍 ✅ "yep" "yeah" = yes/true for whatever was just asked
+- 👎 ❌ "nope" "nah" "no" = no/false for whatever was just asked
+
+If RENTAL_INQUIRY, extract into extracted_info: moveInDate, occupants, employmentStatus, hasPets, petDetails, smoker, creditCheckOk, incomeVerificationOk, viewingRequestedTime, name. Use real JSON booleans. Omit keys not mentioned. intent can be null.`;
+
+  let raw = await callClaude(prompt, 400);
+  raw = stripJsonFences(raw);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { category: 'OTHER', intent: null, extracted_info: {} };
+  }
+}
+
+export async function draftReply(opts: {
+  category: Category;
+  history: string;
+  message: string;
+  nextQuestion: string | null;
+  styleGuidance: string;
+  contactName?: string;
+  ownerContext?: string;
+}): Promise<string> {
+  if (opts.category === 'SPAM') return '';
+
+  const nameContext = opts.contactName ? `You are replying to ${opts.contactName}. ` : '';
+  const ownerBlock = opts.ownerContext ? `\n${opts.ownerContext}` : '';
+
+  let instructions: string;
+  if (opts.category === 'RENTAL_INQUIRY') {
+    instructions = opts.nextQuestion
+      ? `${nameContext}You're replying on behalf of a landlord to a rental inquiry. Briefly acknowledge what they said, then ask exactly this — in natural phrasing — and only this: "${opts.nextQuestion}". One question only, nothing else.`
+      : `${nameContext}You're replying on behalf of a landlord. Every required field has been collected — do NOT ask anything further. Let them know you'll follow up shortly. Don't invent times or addresses.`;
   } else {
-    // --- Normal classify step ---
-    const classification = await classifyMessage(history, effectiveBody, contactName);
-    response.category = classification.category;
-    await supabaseAdmin.from('messages').update({ category: classification.category, intent: classification.intent }).eq('id', incomingMsg.id);
-
-    const isAutoPilotEligible = classification.category === 'RENTAL_INQUIRY' && !body.trusted;
-    // SMS trusted contacts: auto-reply to personal/general/work too.
-    // The whole point is automation — only truly ambiguous decisions
-    // (viewing bookings, rejecting applicants) need owner approval.
-    const isSmsAutoReply = body.channel === 'sms' &&
-      ['PERSONAL', 'GENERAL_CONVERSATION', 'WORK', 'OTHER'].includes(classification.category);
-
-    if (isAutoPilotEligible) {
-      const mergedApplicant = mergeApplicant(applicant, classification.extracted_info || {});
-      mergedApplicant.qualificationScore = computeScore(mergedApplicant);
-      const complete = isApplicantComplete(mergedApplicant);
-      const nextQ = complete ? null : (conv.opener_asked ? nextMissingQuestion(mergedApplicant) : OPENER_QUESTION);
-
-      const draft = await draftReply({
-        category: classification.category, history, message: effectiveBody,
-        nextQuestion: nextQ, styleGuidance: styleGuidanceBlock(styleExamples || []),
-        contactName, ownerContext,
-      });
-
-      response.autoSendText = draft;
-
-      await supabaseAdmin.from('applicants').upsert({
-        conversation_id: conv.id, name: mergedApplicant.name, move_in_date: mergedApplicant.moveInDate,
-        occupants: mergedApplicant.occupants, has_pets: mergedApplicant.hasPets, pet_details: mergedApplicant.petDetails,
-        smoker: mergedApplicant.smoker, employment_status: mergedApplicant.employmentStatus,
-        income_verification_ok: mergedApplicant.incomeVerificationOk, credit_check_ok: mergedApplicant.creditCheckOk,
-        viewing_requested_time: mergedApplicant.viewingRequestedTime, qualification_score: mergedApplicant.qualificationScore,
-      });
-
-      await supabaseAdmin.from('conversations').update({ opener_asked: true }).eq('id', conv.id);
-
-      if (complete && !conv.decision_pending && conv.decision_made === null) {
-        await supabaseAdmin.from('decisions').insert({ conversation_id: conv.id, type: 'qualify', status: 'pending' });
-        await supabaseAdmin.from('conversations').update({ decision_pending: true }).eq('id', conv.id);
-        response.decisionCreated = 'qualify';
-      }
-    } else if (classification.category === 'SPAM') {
-      // Silently dropped
-    } else if (isSmsAutoReply) {
-      const draft = await draftReply({
-        category: classification.category, history, message: effectiveBody,
-        nextQuestion: null, styleGuidance: styleGuidanceBlock(styleExamples || []),
-        contactName, ownerContext,
-      });
-      if (draft) {
-        response.autoSendText = draft;
-      }
-    } else {
-      const draft = await draftReply({
-        category: classification.category, history, message: effectiveBody,
-        nextQuestion: null, styleGuidance: styleGuidanceBlock(styleExamples || []),
-        contactName, ownerContext,
-      });
-      if (draft) {
-        response.needsApproval = true;
-        response.draftText = draft;
-        await supabaseAdmin.from('messages').insert({
-          conversation_id: conv.id, direction: 'outgoing', body: draft, status: 'drafted',
-        });
-      }
-    }
+    instructions = `${nameContext}You're replying on behalf of the phone's owner. Reply naturally and conversationally, SMS length — like a real person texting back, not a formal response. Read the full conversation before replying so you understand the context. Never ask who the person is. If they sent media with no text, acknowledge it warmly. If asked about the owner's personal details, use the owner context below — never guess or make things up.`;
   }
 
-  if (response.autoSendText) {
-    await supabaseAdmin.from('messages').insert({
-      conversation_id: conv.id, direction: 'outgoing', body: response.autoSendText, status: 'sent', auto_sent: true,
-    });
-  }
+  const prompt = `${instructions}${ownerBlock}${opts.styleGuidance}
 
-  // Background-ish summarization check (kept inline for simplicity; fine at
-  // personal-app volume — move to a queue if this ever needs to scale).
-  const newCount = (priorMessages?.length || 0) + 1 + (response.autoSendText ? 1 : 0);
-  if (newCount - conv.last_summarized_at >= 10) {
-    const { data: allMsgs } = await supabaseAdmin.from('messages').select('direction, body').eq('conversation_id', conv.id).order('created_at');
-    const fullText = (allMsgs || []).map(m => (m.direction === 'incoming' ? 'Them: ' : 'You: ') + m.body).join('\n');
-    const summary = await summarizeConversation(fullText);
-    await supabaseAdmin.from('conversations').update({ summary, last_summarized_at: newCount }).eq('id', conv.id);
-  }
+Conversation so far (read ALL of this — understand what's been discussed, agreed, and what's still open before writing anything):
+${opts.history}
 
-  res.status(200).json(response);
+Their latest message:
+"${opts.message}"
+
+Before replying, think about:
+- What is this conversation actually about?
+- What has already been said or agreed — don't repeat or contradict it
+- What does this message actually need — an answer, an acknowledgment, a question?
+- Does the owner profile apply to anything being asked?
+
+Reply with ONLY the SMS text — no quotes, no preamble, no markdown. Natural and brief.`;
+
+  const raw = await callClaude(prompt, 350);
+  return raw.trim();
+}
+
+export async function pickSlot(message: string, offeredSlots: string[]): Promise<string | null> {
+  const prompt = `A tenant was offered these viewing time slots: ${offeredSlots.join(', ')}.
+They just replied: "${message}"
+
+Did they clearly pick one of the offered slots? Respond with ONLY this JSON, no markdown:
+{ "slot": "<one of the exact offered slot strings, or null if unclear>" }`;
+
+  let raw = await callClaude(prompt, 150);
+  raw = stripJsonFences(raw);
+  try {
+    const parsed = JSON.parse(raw);
+    return offeredSlots.includes(parsed.slot) ? parsed.slot : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function summarizeConversation(fullText: string): Promise<string> {
+  const prompt = `Summarize this conversation in 2-3 short sentences — key facts, decisions, and context that would matter for replying going forward. No preamble, just the summary.
+
+${fullText}`;
+  const raw = await callClaude(prompt, 150);
+  return raw.trim();
+}
+
+export function styleGuidanceBlock(examples: Array<{ original: string; edited: string }>): string {
+  if (examples.length === 0) return '';
+  return `\n\nThe owner has edited past drafts like this — match their tone/style but don't copy verbatim:\n` +
+    examples.map(e => `- Was: "${e.original}"\n  Changed to: "${e.edited}"`).join('\n');
 }
